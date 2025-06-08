@@ -71,6 +71,9 @@ LPDIRECTINPUTDEVICE8 g_apFFDevice[4] = { NULL, NULL, NULL, NULL };              
 LPDIRECTINPUTEFFECT  g_apdiEffect[4] = { NULL, NULL, NULL, NULL };                  // Array of handles for FF-Effects, one for each controller
 TCHAR g_pszThreadMessage[DEFAULT_BUFFER] = _T("");
 
+static OctagonCorner gCorners[8];
+static OctagonSide gSides[8];
+
 BOOL APIENTRY DllMain( HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved )
 {
     switch ( ul_reason_for_call )
@@ -80,6 +83,10 @@ BOOL APIENTRY DllMain( HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRe
         if( !prepareHeap())
             return FALSE;
         DebugWriteA("DLL attach (" VER_FILE_VERSION_STR "-Debugbuild | built on " __DATE__ " at " __TIME__")\n");
+       
+        // Init octagon geometry
+        GenerateOctagonGeometry(gCorners, gSides, XC_ANALOG_MAX);
+        
         ZeroMemory( &g_strEmuInfo, sizeof(g_strEmuInfo) );
         ZeroMemory( g_devList, sizeof(g_devList) );
         ZeroMemory( &g_sysMouse, sizeof(g_sysMouse) );
@@ -1306,56 +1313,55 @@ DWORD WINAPI DelayedShortcut(LPVOID lpParam)
     return 0;
 }
 
-void OctagonProj(float& outputX, float& outputY, float CARDINAL_MAX, float ANGLE_THRESHOLD)
+void GenerateOctagonGeometry(OctagonCorner corners[8], OctagonSide sides[8], float radius) {
+    for (int i = 0; i < 8; ++i) {
+        float angle = i * OCTAGON_ANGLE;
+        float x = radius * cosf(angle);
+        float y = radius * sinf(angle);
+        corners[i] = { x, y };
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        int j = (i + 1) % 8;
+        float dx = corners[j].x - corners[i].x;
+        float dy = corners[j].y - corners[i].y;
+        float len = hypotf(dx, dy);
+        float nx = dy / len;
+        float ny = -dx / len;
+        sides[i] = { nx, ny, corners[i].x, corners[i].y };
+    }
+}
+
+void OctagonProjPrecise( float& x, float& y, const OctagonCorner corners[8], const OctagonSide sides[8], float ANGLE_THRESHOLD) 
 {
-    constexpr float DIAG_RATIO = 2.448f; //CARDINAL_MAX * 0.71f / (CARDINAL_MAX - CARDINAL_MAX * 0.71f); max 71% diagonal
-    const float C = CARDINAL_MAX * DIAG_RATIO;
+    float r = hypotf(x, y);
+    if (r < EPSILON) return;
 
-    float ax = fabs(outputX);
-    float ay = fabs(outputY);
-    float r = hypotf(ax, ay);
+    float theta = atan2f(y, x);
+    if (theta < 0) theta += 2 * PI;
 
-    if (r > EPSILON)
-    {
-        float theta = atan2f(ay, ax);
-        float r_max = (theta <= OCTAGON_ANGLE)
-            ? (C / (sinf(theta) + DIAG_RATIO * cosf(theta)))
-            : (C / (cosf(theta) + DIAG_RATIO * sinf(theta)));
+    int sideIndex = static_cast<int>(theta / OCTAGON_ANGLE) % 8;
+    const auto& s = sides[sideIndex];
+    float dist = (x - s.px) * s.nx + (y - s.py) * s.ny;
 
-        if (r >= r_max)
-        {
-            float new_r = r_max;
-            float new_ax = new_r * cosf(theta);
-            float new_ay = new_r * sinf(theta);
+    if (dist > 0) {
+        x -= dist * s.nx;
+        y -= dist * s.ny;
 
-            outputX = (outputX < 0) ? -new_ax : new_ax;
-            outputY = (outputY < 0) ? -new_ay : new_ay;
-        }
-
-        if( ANGLE_THRESHOLD > 0)
-        {
-            float angles[8] = { 0.0f, OCTAGON_ANGLE, 2 * OCTAGON_ANGLE, 3 * OCTAGON_ANGLE, 4 * OCTAGON_ANGLE, 5 * OCTAGON_ANGLE, 6 * OCTAGON_ANGLE, 7 * OCTAGON_ANGLE };
-            if (r >= r_max)
-            {
-                for (int i = 0; i < 8; ++i)
-                {
-                    float angle = angles[i];
-                    float angleLowerBound = angle - ANGLE_THRESHOLD;
-                    float angleUpperBound = angle + ANGLE_THRESHOLD;
-
-                    // Check if we need to lock
-                    if (theta >= angleLowerBound && theta < angleUpperBound)
-                    {
-                        outputX = (outputX < 0) ? -CARDINAL_MAX * cosf(angle) : CARDINAL_MAX * cosf(angle);
-                        outputY = (outputY < 0) ? -CARDINAL_MAX * sinf(angle) : CARDINAL_MAX * sinf(angle);
-                        break;
-                    }
+        if (ANGLE_THRESHOLD > 0.f) {
+            for (int i = 0; i < 8; ++i) {
+                float cornerAngle = i * OCTAGON_ANGLE;
+                float diff = fabsf(theta - cornerAngle);
+                if (diff > PI) diff = 2 * PI - diff;
+                if (diff < ANGLE_THRESHOLD) {
+                    x = corners[i].x;
+                    y = corners[i].y;
+                    return;
                 }
             }
         }
     }
 }
-
 
 void processStickInput(CONTROLLER* pcController, short inputX, short inputY, float& outputX, float& outputY)
 {
@@ -1388,7 +1394,7 @@ void processStickInput(CONTROLLER* pcController, short inputX, short inputY, flo
     outputY = (inputY / magnitude) * normalizedMagnitude * XC_ANALOG_MAX;
 
     if (pcController->fRealN64Range) {
-        OctagonProj(outputX, outputY, XC_ANALOG_MAX, ANGLE_THRESHOLD);
+        OctagonProjPrecise(outputX, outputY, gCorners, gSides, ANGLE_THRESHOLD);
     }
 
     if (pcController->xiController.stAnalogs.iInvertLX)

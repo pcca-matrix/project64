@@ -412,7 +412,17 @@ typedef struct _ANALOGWIN {
     float TRIANGLE_HEIGHT;
 } ANALOGWIN;
 
-void OctagonProj(float& outputX, float& outputY, float CARDINAL_MAX, float ANGLE_THRESHOLD);
+struct OctagonSide {
+    float nx, ny;
+    float px, py;
+};
+
+struct OctagonCorner {
+    float x, y;
+};
+
+void GenerateOctagonGeometry(OctagonCorner corners[8], OctagonSide sides[8], float radius);
+
 void processStickInput(CONTROLLER* pcController, short inputX, short inputY, float& outputX, float& outputY);
 
 #endif
